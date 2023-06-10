@@ -2,9 +2,9 @@
 pragma solidity ^0.8.18;
 
 import {TrieStableCoin} from "./TrieStableCoin.sol";
-import {ReentrancyGuard} from "openzeppelin-contracts/contracts/security/ReentrancyGuard.sol";
-import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
-import {AggregatorV3Interface} from "chainlink-brownie-contracts/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+import {ReentrancyGuard} from "openzeppelin/security/ReentrancyGuard.sol";
+import {AggregatorV3Interface} from "chainlink/v0.8/interfaces/AggregatorV3Interface.sol";
+import {IERC20} from "openzeppelin/token/ERC20/IERC20.sol";
 
 /**
  * @title TSCEngine
@@ -14,51 +14,50 @@ import {AggregatorV3Interface} from "chainlink-brownie-contracts/contracts/src/v
  */
 
 contract TSCEngine is ReentrancyGuard {
-    error DSCEngine__moreThanZero();
-    error DSCEngine__tokenAddressAndPriceFeedAddressMustBeEqual();
-    error DSCEngine__NotAllowedToken();
+    error TSCEngine__MoreThanZero();
+    error TSCEngine__TokenAddressAndPriceFeedAddressMustBeEqual();
+    error TSCEngine__NotAllowedToken();
     error TSCEngine__TransferFail();
     error TSCEngine__BreaksHealthFactor(uint256 userHealthFactor);
+    error TSCEngine__MintFailed();
+    error TSCEngine__UserNotLiquidatable();
 
     uint256 private constant ADDITIONAL_FEED_PRESCISION = 1e10; // just to make the the price feed compatible with the system
     uint256 private constant PRECISION = 1e18;
     uint256 private constant LIQUIDATION_THRESHOLD = 50; // 200% over collateralized
     uint256 private constant LIQUIDATION_PRECISION = 100;
-    uint256 private constant MIN_HEALTH_FACTOR = 1;
-    mapping(address token => address priceFeed) private s_priceFeeds;
-    mapping(address user => mapping(address token => uint256 amount))
-        private s_collateralDeposited;
-    mapping(address user => uint256 amountTscMinted) private s_tscMinted;
-    address[] private s_collateralTokens;
-    TrieStableCoin immutable i_tsc;
+    uint256 private constant MIN_HEALTH_FACTOR = 1e18;
+    uint256 private constant LIQUIDATION_BONUS = 10; // 10% bonus for liquidator
 
-    event CollateralDeposited(
-        address indexed depositor,
-        address indexed token,
-        uint256 indexed amount
+    mapping(address token => address priceFeed) private s_priceFeeds; //solhint-disable-line
+    mapping(address user => mapping(address token => uint256 amount)) // solhint-disable-line
+        private s_collateralDeposited; //solhint-disable-line
+    mapping(address user => uint256 amountTscMinted) private s_tscMinted; //solhint-disable-line
+    address[] private s_collateralTokens; //solhint-disable-line
+    TrieStableCoin immutable i_tsc; //solhint-disable-line
+
+    event CollateralDeposited(address indexed depositor, address indexed token, uint256 indexed amount);
+    event CollateralRedeemed(
+        address indexed redeemedFrom, address indexed redeemedTo, address indexed token, uint256 amount
     );
 
     modifier moreThanZero(uint256 _amount) {
         if (_amount <= 0) {
-            revert DSCEngine__moreThanZero();
+            revert TSCEngine__MoreThanZero();
         }
         _;
     }
 
     modifier isAllowedToken(address _tokenAddress) {
         if (s_priceFeeds[_tokenAddress] == address(0)) {
-            revert DSCEngine__NotAllowedToken();
+            revert TSCEngine__NotAllowedToken();
         }
         _;
     }
 
-    constructor(
-        address[] memory tokenAddresses,
-        address[] memory priceFeedAddresses,
-        address tscAddress
-    ) {
+    constructor(address[] memory tokenAddresses, address[] memory priceFeedAddresses, address tscAddress) {
         if (tokenAddresses.length != priceFeedAddresses.length) {
-            revert DSCEngine__tokenAddressAndPriceFeedAddressMustBeEqual();
+            revert TSCEngine__TokenAddressAndPriceFeedAddressMustBeEqual();
         }
         for (uint256 i = 0; i < tokenAddresses.length; i++) {
             s_priceFeeds[tokenAddresses[i]] = priceFeedAddresses[i];
@@ -67,74 +66,141 @@ contract TSCEngine is ReentrancyGuard {
         i_tsc = TrieStableCoin(tscAddress);
     }
 
-    function depositCollateralAndMintTSC() external payable returns (bool) {}
+    function depositCollateralAndMintTSC(address tokenCollateralAddress, uint256 amount, uint256 amountDscToMint)
+        external
+    {
+        depositCollateral(tokenCollateralAddress, amount);
+        mintTsc(amountDscToMint);
+    }
 
     /**
      * @param tokenCollateralAddress address of the collateral token
      * @param _amountCollateral amount of collateral to be deposited
      */
 
-    function depositCollaterals(
-        address tokenCollateralAddress,
-        uint256 _amountCollateral
-    )
-        external
+    function depositCollateral(address tokenCollateralAddress, uint256 _amountCollateral)
+        public
         moreThanZero(_amountCollateral)
         isAllowedToken(tokenCollateralAddress)
         nonReentrant
     {
         address sender = msg.sender;
-        s_collateralDeposited[sender][
-            tokenCollateralAddress
-        ] += _amountCollateral;
-        emit CollateralDeposited(
-            sender,
-            tokenCollateralAddress,
-            _amountCollateral
-        );
-        bool success = IERC20(tokenCollateralAddress).transferFrom(
-            msg.sender,
-            address(this),
-            _amountCollateral
-        );
+        s_collateralDeposited[sender][tokenCollateralAddress] += _amountCollateral;
+        emit CollateralDeposited(sender, tokenCollateralAddress, _amountCollateral);
+        bool success = IERC20(tokenCollateralAddress).transferFrom(msg.sender, address(this), _amountCollateral);
         if (!success) {
             revert TSCEngine__TransferFail();
         }
     }
 
-    function redeemCollateralForTsc() external returns (bool) {}
-
-    function redeemCollateral() external returns (bool) {}
-
-    /**
-     *@param amountTscToMint of TSC to mint user can specify this
-     *@dev this function will mint TSC on the basis of collateral deposited
-     *@notice minter should have minimal treshold deposited before minting
-     */
-    function mintTsc(
-        uint256 amountTscToMint
-    ) external moreThanZero(amountTscToMint) {
-        s_tscMinted[msg.sender] += amountTscToMint;
+    function redeemCollateralForTsc(address tokenCollateralAddress, uint256 amountCollateral, uint256 amountTscToBurn)
+        external
+    {
+        burnTsc(amountTscToBurn);
+        _redeemCollateral(tokenCollateralAddress, amountCollateral, msg.sender, msg.sender);
         _checkHealthFactor(msg.sender);
 
-        // in order to mint we need to figure out the deposited collateral and its USD value and on the basis of that we gotta mint the token lets say 70% of collateral
+        // in order to redeem the follwoing should met
+        // 1. user should have more than 1 health factor after collateral pulled
+        //  _redeemCollateral(tokenCollateralAddress,amountCollateral,msg.sender,msg.sender);
+        _checkHealthFactor(msg.sender);
+    }
+    /**
+     * @param amountTscToMint of TSC to mint user can specify this
+     * @dev this function will mint TSC on the basis of collateral deposited
+     * @notice minter should have minimal treshold deposited before minting
+     */
+
+    function mintTsc(uint256 amountTscToMint) public moreThanZero(amountTscToMint) {
+        s_tscMinted[msg.sender] += amountTscToMint;
+        _checkHealthFactor(msg.sender);
+        bool minted = i_tsc.mint(msg.sender, amountTscToMint);
+        if (!minted) {
+            revert TSCEngine__MintFailed();
+        }
     }
 
-    function burnTsc() external returns (bool) {}
+    function redeemCollateral(address tokenCollateralAddress, uint256 amountCollateral)
+        external
+        moreThanZero(amountCollateral)
+        nonReentrant
+    {
+        _redeemCollateral(tokenCollateralAddress, amountCollateral, msg.sender, msg.sender);
+        _checkHealthFactor(msg.sender);
+    }
 
-    function liquidate() external returns (bool) {}
+    function burnTsc(uint256 amount) public moreThanZero(amount) {
+        _burnTsc(amount, msg.sender, msg.sender);
+        _checkHealthFactor(msg.sender); // dont know if this is needed
+    }
+    /**
+     *
+     * @param collateral erc20 collateral address to liquidate
+     * @param user  user who has broken the health factor i.e userhealthfactor < MIN_HEALTH_FACTOR
+     * @param debtToCover amount of TSC you want to burn to improve user healt factor
+     * @notice you can partially liquidate the user
+     * @notice you will get liquidation bonus taking the users fund
+     * @notice this function workings assumes that the protocol is 200% over collateralized
+     * @notice A known bug would be if the protocol is 100% or less collateralize then we wouldn't be able to incentive the liquidators.
+     * for example of the price of collateral plummeted before anyone could be liquidated
+     */
+
+    function liquidate(address collateral, address user, uint256 debtToCover)
+        external
+        moreThanZero(debtToCover)
+        nonReentrant
+    {
+        uint256 startingUserHealthFactor = _healthFactor(user);
+        if (startingUserHealthFactor >= MIN_HEALTH_FACTOR) {
+            revert TSCEngine__UserNotLiquidatable();
+        }
+        //  We want to burn their TSC debt
+        // And take their collateral
+        //Bad user: $140 ETH ,$100 TSC (should not pass healtfactor)
+        // debtToCover = $100
+        // $100 TSC == ?? ETH
+        uint256 tokenAmountFromDebtCover = getTokenAmountFromUsd(collateral, debtToCover);
+        // and give them 10% bonus
+        // so we are giving liquidator $110 of Weth for 100 TSC
+        uint256 bonusCollateral = tokenAmountFromDebtCover * LIQUIDATION_BONUS / LIQUIDATION_PRECISION;
+        // 0.05 eth * 0.1 = 0.005 => getting 0.055 eth
+        uint256 totalCollateralToRedeem = tokenAmountFromDebtCover + bonusCollateral;
+        _redeemCollateral(collateral, totalCollateralToRedeem, user, msg.sender);
+        _burnTsc(debtToCover, user, msg.sender);
+    }
 
     function getHealthFactor() external view returns (bool) {}
 
-    /**********************
-     * INTERNAL FUNCTIONS *
-     **********************/
-
     /**
-     *@param user address of the user
-     *@dev this function will check the health factor of the user
-     *@dev checks if the deposited collateral is less than the threshold
+     *
+     * INTERNAL FUNCTIONS *
+     *
      */
+    function _burnTsc(uint256 amountTscToBurn, address onBehalfOf, address tscFrom) private {
+        s_tscMinted[onBehalfOf] -= amountTscToBurn;
+        bool success = i_tsc.transferFrom(tscFrom, address(this), amountTscToBurn);
+        if (!success) {
+            revert TSCEngine__TransferFail();
+        }
+        i_tsc.burn(amountTscToBurn);
+    }
+
+    function _redeemCollateral(address tokenCollateralAddress, uint256 amountCollateral, address from, address to)
+        private
+    {
+        s_collateralDeposited[from][tokenCollateralAddress] -= amountCollateral;
+        emit CollateralRedeemed(from, to, tokenCollateralAddress, amountCollateral);
+        bool success = IERC20(tokenCollateralAddress).transfer(to, amountCollateral);
+        if (!success) {
+            revert TSCEngine__TransferFail();
+        }
+    }
+    /**
+     * @param user address of the user
+     * @dev this function will check the health factor of the user
+     * @dev checks if the deposited collateral is less than the threshold
+     */
+
     function _checkHealthFactor(address user) internal view {
         uint256 userHealthFactor = _healthFactor(user);
         if (userHealthFactor < MIN_HEALTH_FACTOR) {
@@ -147,12 +213,8 @@ contract TSCEngine is ReentrancyGuard {
      * if a user go below 1 then they can get liquidated
      */
     function _healthFactor(address user) internal view returns (uint256) {
-        (
-            uint256 totalDscMinted,
-            uint256 collateralValueInUsd
-        ) = _getAccountInformation(user);
-        uint256 collateralAdjustedForTreshold = (collateralValueInUsd *
-            LIQUIDATION_THRESHOLD) / LIQUIDATION_PRECISION;
+        (uint256 totalDscMinted, uint256 collateralValueInUsd) = _getAccountInformation(user);
+        uint256 collateralAdjustedForTreshold = (collateralValueInUsd * LIQUIDATION_THRESHOLD) / LIQUIDATION_PRECISION;
         // $1000 ETH and 100 TSC
         // collateralAdjustedForTreshold  = 1000 * 50 = 5000 / 100 = 500
         // return 500 / 100 = 5 (health factor) here it will do this with precision
@@ -160,9 +222,7 @@ contract TSCEngine is ReentrancyGuard {
         return (collateralAdjustedForTreshold * PRECISION) / totalDscMinted;
     }
 
-    function _getAccountInformation(
-        address user
-    )
+    function _getAccountInformation(address user)
         private
         view
         returns (uint256 totalDscMinted, uint256 collateralValueInUsd)
@@ -171,9 +231,16 @@ contract TSCEngine is ReentrancyGuard {
         collateralValueInUsd = _getAccountCollateralValue(user);
     }
 
-    function _getAccountCollateralValue(
-        address user
-    ) public view returns (uint256 totalCollateralValueInUsd) {
+    function getTokenAmountFromUsd(address token, uint256 usdAmountInWei) public view returns (uint256) {
+        //  price of ETH(token)
+        // $/eth => eth > ??
+        AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
+        (, int256 price,,,) = priceFeed.latestRoundData();
+        return (usdAmountInWei * PRECISION) / (uint256(price) * ADDITIONAL_FEED_PRESCISION);
+        //  $ (10e18 * 1e18) / ($2000e8 * 1e10)
+    }
+
+    function _getAccountCollateralValue(address user) public view returns (uint256 totalCollateralValueInUsd) {
         for (uint256 i = 0; i < s_collateralTokens.length; i++) {
             address token = s_collateralTokens[i];
             uint256 amount = s_collateralDeposited[user][token];
@@ -182,16 +249,10 @@ contract TSCEngine is ReentrancyGuard {
         return totalCollateralValueInUsd;
     }
 
-    function getUsdValue(
-        address token,
-        uint256 amount
-    ) public view returns (uint256) {
-        AggregatorV3Interface priceFeed = AggregatorV3Interface(
-            s_priceFeeds[token]
-        );
-        (, int256 price, , , ) = priceFeed.latestRoundData();
-        uint256 formattedPrice = (uint256(price) *
-            ADDITIONAL_FEED_PRESCISION *
-            amount) / 1e18;
+    function getUsdValue(address token, uint256 amount) public view returns (uint256) {
+        AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
+        (, int256 price,,,) = priceFeed.latestRoundData();
+        uint256 formattedPrice = (uint256(price) * ADDITIONAL_FEED_PRESCISION * amount) / 1e18;
+        return formattedPrice;
     }
 }
