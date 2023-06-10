@@ -14,6 +14,8 @@ import {IERC20} from "openzeppelin/token/ERC20/IERC20.sol";
  */
 
 contract TSCEngine is ReentrancyGuard {
+    /* --------------------------------- ERRORS --------------------------------- */
+
     error TSCEngine__MoreThanZero();
     error TSCEngine__TokenAddressAndPriceFeedAddressMustBeEqual();
     error TSCEngine__NotAllowedToken();
@@ -21,6 +23,9 @@ contract TSCEngine is ReentrancyGuard {
     error TSCEngine__BreaksHealthFactor(uint256 userHealthFactor);
     error TSCEngine__MintFailed();
     error TSCEngine__UserNotLiquidatable();
+    error TSCEngine__HealthFactorNotImproved();
+
+    /* ----------------------------- STATE VARIABLES ---------------------------- */
 
     uint256 private constant ADDITIONAL_FEED_PRESCISION = 1e10; // just to make the the price feed compatible with the system
     uint256 private constant PRECISION = 1e18;
@@ -36,11 +41,14 @@ contract TSCEngine is ReentrancyGuard {
     address[] private s_collateralTokens; //solhint-disable-line
     TrieStableCoin immutable i_tsc; //solhint-disable-line
 
+    /* ------------------------------- EVENTS --------------------------------- */
+
     event CollateralDeposited(address indexed depositor, address indexed token, uint256 indexed amount);
     event CollateralRedeemed(
         address indexed redeemedFrom, address indexed redeemedTo, address indexed token, uint256 amount
     );
 
+    /* -------------------------------- MODIFIERS ------------------------------- */
     modifier moreThanZero(uint256 _amount) {
         if (_amount <= 0) {
             revert TSCEngine__MoreThanZero();
@@ -54,6 +62,9 @@ contract TSCEngine is ReentrancyGuard {
         }
         _;
     }
+    /* -------------------------------------------------------------------------- */
+    /*                                  FUNCTIONS                                 */
+    /* -------------------------------------------------------------------------- */
 
     constructor(address[] memory tokenAddresses, address[] memory priceFeedAddresses, address tscAddress) {
         if (tokenAddresses.length != priceFeedAddresses.length) {
@@ -65,6 +76,7 @@ contract TSCEngine is ReentrancyGuard {
         }
         i_tsc = TrieStableCoin(tscAddress);
     }
+    /* ---------------------------- EXTERNAL FUNCTIONS--------------------------- */
 
     function depositCollateralAndMintTSC(address tokenCollateralAddress, uint256 amount, uint256 amountDscToMint)
         external
@@ -105,20 +117,6 @@ contract TSCEngine is ReentrancyGuard {
         //  _redeemCollateral(tokenCollateralAddress,amountCollateral,msg.sender,msg.sender);
         _checkHealthFactor(msg.sender);
     }
-    /**
-     * @param amountTscToMint of TSC to mint user can specify this
-     * @dev this function will mint TSC on the basis of collateral deposited
-     * @notice minter should have minimal treshold deposited before minting
-     */
-
-    function mintTsc(uint256 amountTscToMint) public moreThanZero(amountTscToMint) {
-        s_tscMinted[msg.sender] += amountTscToMint;
-        _checkHealthFactor(msg.sender);
-        bool minted = i_tsc.mint(msg.sender, amountTscToMint);
-        if (!minted) {
-            revert TSCEngine__MintFailed();
-        }
-    }
 
     function redeemCollateral(address tokenCollateralAddress, uint256 amountCollateral)
         external
@@ -127,11 +125,6 @@ contract TSCEngine is ReentrancyGuard {
     {
         _redeemCollateral(tokenCollateralAddress, amountCollateral, msg.sender, msg.sender);
         _checkHealthFactor(msg.sender);
-    }
-
-    function burnTsc(uint256 amount) public moreThanZero(amount) {
-        _burnTsc(amount, msg.sender, msg.sender);
-        _checkHealthFactor(msg.sender); // dont know if this is needed
     }
     /**
      *
@@ -167,15 +160,37 @@ contract TSCEngine is ReentrancyGuard {
         uint256 totalCollateralToRedeem = tokenAmountFromDebtCover + bonusCollateral;
         _redeemCollateral(collateral, totalCollateralToRedeem, user, msg.sender);
         _burnTsc(debtToCover, user, msg.sender);
+        uint256 endingUserHealthFactor = _healthFactor(user);
+        if (endingUserHealthFactor <= startingUserHealthFactor) {
+            revert TSCEngine__HealthFactorNotImproved();
+        }
+        _checkHealthFactor(msg.sender);
     }
 
-    function getHealthFactor() external view returns (bool) {}
+    /* ---------------------------- PUBLIC FUNCTIONS ---------------------------- */
 
     /**
-     *
-     * INTERNAL FUNCTIONS *
-     *
+     * @param amountTscToMint of TSC to mint user can specify this
+     * @dev this function will mint TSC on the basis of collateral deposited
+     * @notice minter should have minimal treshold deposited before minting
      */
+
+    function mintTsc(uint256 amountTscToMint) public moreThanZero(amountTscToMint) {
+        s_tscMinted[msg.sender] += amountTscToMint;
+        _checkHealthFactor(msg.sender);
+        bool minted = i_tsc.mint(msg.sender, amountTscToMint);
+        if (!minted) {
+            revert TSCEngine__MintFailed();
+        }
+    }
+
+    function burnTsc(uint256 amount) public moreThanZero(amount) {
+        _burnTsc(amount, msg.sender, msg.sender);
+        _checkHealthFactor(msg.sender); // dont know if this is needed
+    }
+
+    /* ---------------------------- PRIVATE FUNCTIONS --------------------------- */
+
     function _burnTsc(uint256 amountTscToBurn, address onBehalfOf, address tscFrom) private {
         s_tscMinted[onBehalfOf] -= amountTscToBurn;
         bool success = i_tsc.transferFrom(tscFrom, address(this), amountTscToBurn);
@@ -195,6 +210,9 @@ contract TSCEngine is ReentrancyGuard {
             revert TSCEngine__TransferFail();
         }
     }
+
+    /* -------------------------- PRIVATE/VIEW/INTERNAL FUNCTIONS ------------------------- */
+
     /**
      * @param user address of the user
      * @dev this function will check the health factor of the user
@@ -230,6 +248,8 @@ contract TSCEngine is ReentrancyGuard {
         totalDscMinted = s_tscMinted[user];
         collateralValueInUsd = _getAccountCollateralValue(user);
     }
+
+    /* --------------------- PUBLIC/EXTERNAL/VIEW FUNCTIONS --------------------- */
 
     function getTokenAmountFromUsd(address token, uint256 usdAmountInWei) public view returns (uint256) {
         //  price of ETH(token)
