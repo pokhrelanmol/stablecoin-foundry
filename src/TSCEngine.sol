@@ -5,7 +5,7 @@ import {TrieStableCoin} from "./TrieStableCoin.sol";
 import {ReentrancyGuard} from "openzeppelin/security/ReentrancyGuard.sol";
 import {AggregatorV3Interface} from "chainlink/v0.8/interfaces/AggregatorV3Interface.sol";
 import {IERC20} from "openzeppelin/token/ERC20/IERC20.sol";
-
+import {console} from "forge-std/console.sol";
 /**
  * @title TSCEngine
  * @author Anmol Pokhrel
@@ -49,6 +49,7 @@ contract TSCEngine is ReentrancyGuard {
     );
 
     /* -------------------------------- MODIFIERS ------------------------------- */
+
     modifier moreThanZero(uint256 _amount) {
         if (_amount <= 0) {
             revert TSCEngine__MoreThanZero();
@@ -78,11 +79,11 @@ contract TSCEngine is ReentrancyGuard {
     }
     /* ---------------------------- EXTERNAL FUNCTIONS--------------------------- */
 
-    function depositCollateralAndMintTSC(address tokenCollateralAddress, uint256 amount, uint256 amountDscToMint)
+    function depositCollateralAndMintTSC(address tokenCollateralAddress, uint256 amount, uint256 amountTscToMint)
         external
     {
         depositCollateral(tokenCollateralAddress, amount);
-        mintTsc(amountDscToMint);
+        mintTsc(amountTscToMint);
     }
 
     /**
@@ -213,6 +214,24 @@ contract TSCEngine is ReentrancyGuard {
 
     /* -------------------------- PRIVATE/VIEW/INTERNAL FUNCTIONS ------------------------- */
 
+    function _calculateHealthFactor(uint256 totalTscMinted, uint256 collateralValueInUsd)
+        private
+        pure
+        returns (uint256)
+    {
+        // $1000 ETH and 100 TSC
+        // collateralAdjustedForTreshold  = 1000 * 50 = 5000 / 100 = 500
+        // return 500 / 100 = 5 (health factor) here it will do this with precision
+
+        if (totalTscMinted == 0) {
+            return type(uint256).max;
+        } else {
+            uint256 collateralAdjustedForTreshold =
+                (collateralValueInUsd * LIQUIDATION_THRESHOLD) / LIQUIDATION_PRECISION;
+            return (collateralAdjustedForTreshold * PRECISION) / totalTscMinted;
+        }
+    }
+
     /**
      * @param user address of the user
      * @dev this function will check the health factor of the user
@@ -231,21 +250,16 @@ contract TSCEngine is ReentrancyGuard {
      * if a user go below 1 then they can get liquidated
      */
     function _healthFactor(address user) internal view returns (uint256) {
-        (uint256 totalDscMinted, uint256 collateralValueInUsd) = _getAccountInformation(user);
-        uint256 collateralAdjustedForTreshold = (collateralValueInUsd * LIQUIDATION_THRESHOLD) / LIQUIDATION_PRECISION;
-        // $1000 ETH and 100 TSC
-        // collateralAdjustedForTreshold  = 1000 * 50 = 5000 / 100 = 500
-        // return 500 / 100 = 5 (health factor) here it will do this with precision
-
-        return (collateralAdjustedForTreshold * PRECISION) / totalDscMinted;
+        (uint256 totalTscMinted, uint256 collateralValueInUsd) = _getAccountInformation(user);
+        return _calculateHealthFactor(totalTscMinted, collateralValueInUsd);
     }
 
     function _getAccountInformation(address user)
         private
         view
-        returns (uint256 totalDscMinted, uint256 collateralValueInUsd)
+        returns (uint256 totalTscMinted, uint256 collateralValueInUsd)
     {
-        totalDscMinted = s_tscMinted[user];
+        totalTscMinted = s_tscMinted[user];
         collateralValueInUsd = _getAccountCollateralValue(user);
     }
 
@@ -266,6 +280,7 @@ contract TSCEngine is ReentrancyGuard {
             uint256 amount = s_collateralDeposited[user][token];
             totalCollateralValueInUsd += getUsdValue(token, amount);
         }
+        console.log("totalCollateralValueInUsd", totalCollateralValueInUsd);
         return totalCollateralValueInUsd;
     }
 
@@ -273,6 +288,33 @@ contract TSCEngine is ReentrancyGuard {
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
         (, int256 price,,,) = priceFeed.latestRoundData();
         uint256 formattedPrice = (uint256(price) * ADDITIONAL_FEED_PRESCISION * amount) / 1e18;
+        console.log("formattedPrice", formattedPrice);
+        // 2000,00000000 * 1e10 * 2000e18 / 1e18 = 400000
         return formattedPrice;
+    }
+
+    function getAccountInformation(address user)
+        public
+        view
+        returns (uint256 totalTscMinted, uint256 collateralValueInUsd)
+    {
+        (totalTscMinted, collateralValueInUsd) = _getAccountInformation(user);
+    }
+
+    function getTotalTscMintedByUser(address user) external view returns (uint256) {
+        return s_tscMinted[user];
+    }
+
+    function getUserHealthFactor(address user) external view returns (uint256) {
+        uint256 userHealthFactor = _healthFactor(user);
+        return userHealthFactor;
+    }
+
+    function calculateHealthFactor(uint256 totalTscMinted, uint256 collateralValueInUsd)
+        external
+        pure
+        returns (uint256)
+    {
+        return _calculateHealthFactor(totalTscMinted, collateralValueInUsd);
     }
 }
