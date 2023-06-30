@@ -100,7 +100,7 @@ contract TSCEngine is ReentrancyGuard {
         address sender = msg.sender;
         s_collateralDeposited[sender][tokenCollateralAddress] += _amountCollateral;
         emit CollateralDeposited(sender, tokenCollateralAddress, _amountCollateral);
-        bool success = IERC20(tokenCollateralAddress).transferFrom(msg.sender, address(this), _amountCollateral);
+        bool success = IERC20(tokenCollateralAddress).transferFrom(sender, address(this), _amountCollateral);
         if (!success) {
             revert TSCEngine__TransferFail();
         }
@@ -270,7 +270,8 @@ contract TSCEngine is ReentrancyGuard {
         // $/eth => eth > ??
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
         (, int256 price,,,) = priceFeed.latestRoundData();
-        return (usdAmountInWei * PRECISION) / (uint256(price) * ADDITIONAL_FEED_PRESCISION);
+        uint256 tokenAmount = (usdAmountInWei * PRECISION) / (uint256(price) * ADDITIONAL_FEED_PRESCISION);
+        return tokenAmount;
         //  $ (10e18 * 1e18) / ($2000e8 * 1e10)
     }
 
@@ -308,6 +309,10 @@ contract TSCEngine is ReentrancyGuard {
     function getUserHealthFactor(address user) external view returns (uint256) {
         uint256 userHealthFactor = _healthFactor(user);
         return userHealthFactor;
+    }
+
+    function getLiquidationBonus() external pure returns (uint256) {
+        return LIQUIDATION_BONUS;
     }
 
     function calculateHealthFactor(uint256 totalTscMinted, uint256 collateralValueInUsd)
