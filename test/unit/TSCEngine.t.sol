@@ -189,6 +189,11 @@ contract TSCEngineTest is Test {
         vm.stopPrank();
     }
 
+    function testCantBurnMoreThanUserHas() public {
+        vm.prank(USER);
+        vm.expectRevert();
+        tscEngine.burnTsc(1);
+    }
     /* -------------------------------- REDEEM TESTS ------------------------------- */
 
     function testRevertAmountIsLessThenZero() public {
