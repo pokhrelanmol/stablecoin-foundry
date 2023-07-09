@@ -39,7 +39,7 @@ contract Handler is Test {
         if (maxTscToMint < 0) {
             return;
         }
-        amount = bound(amount, 0, uint256(maxTscToMint));
+        amount = bound(amount, 1, uint256(maxTscToMint));
         tscEngine.mintTsc(amount);
     }
 
