@@ -34,12 +34,11 @@ contract TSCEngine is ReentrancyGuard {
     uint256 private constant MIN_HEALTH_FACTOR = 1e18;
     uint256 private constant LIQUIDATION_BONUS = 10; // 10% bonus for liquidator
 
-    mapping(address token => address priceFeed) private s_priceFeeds; //solhint-disable-line
-    mapping(address user => mapping(address token => uint256 amount)) // solhint-disable-line
-        private s_collateralDeposited; //solhint-disable-line
-    mapping(address user => uint256 amountTscMinted) private s_tscMinted; //solhint-disable-line
-    address[] private s_collateralTokens; //solhint-disable-line
-    TrieStableCoin immutable i_tsc; //solhint-disable-line
+    mapping(address token => address priceFeed) private s_priceFeeds;
+    mapping(address user => mapping(address token => uint256 amount)) private s_collateralDeposited;
+    mapping(address user => uint256 amountTscMinted) private s_tscMinted;
+    address[] private s_collateralTokens;
+    TrieStableCoin immutable i_tsc;
 
     /* ------------------------------- EVENTS --------------------------------- */
 
@@ -321,5 +320,13 @@ contract TSCEngine is ReentrancyGuard {
         returns (uint256)
     {
         return _calculateHealthFactor(totalTscMinted, collateralValueInUsd);
+    }
+
+    function getCollateralTokens() external view returns (address[] memory) {
+        return s_collateralTokens;
+    }
+
+    function getCollateralBalOfUser(address user, address token) external view returns (uint256) {
+        return s_collateralDeposited[user][token];
     }
 }
