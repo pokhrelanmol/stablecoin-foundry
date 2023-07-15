@@ -6,6 +6,7 @@ import {ReentrancyGuard} from "openzeppelin/security/ReentrancyGuard.sol";
 import {AggregatorV3Interface} from "chainlink/v0.8/interfaces/AggregatorV3Interface.sol";
 import {IERC20} from "openzeppelin/token/ERC20/IERC20.sol";
 import {console} from "forge-std/console.sol";
+import {OracleLib} from "./libraries/OracleLib.sol";
 /**
  * @title TSCEngine
  * @author Anmol Pokhrel
@@ -24,7 +25,9 @@ contract TSCEngine is ReentrancyGuard {
     error TSCEngine__MintFailed();
     error TSCEngine__UserNotLiquidatable();
     error TSCEngine__HealthFactorNotImproved();
+    /* ---------------------------------- TYPES --------------------------------- */
 
+    using OracleLib for AggregatorV3Interface;
     /* ----------------------------- STATE VARIABLES ---------------------------- */
 
     uint256 private constant ADDITIONAL_FEED_PRESCISION = 1e10; // just to make the the price feed compatible with the system
@@ -268,7 +271,7 @@ contract TSCEngine is ReentrancyGuard {
         //  price of ETH(token)
         // $/eth => eth > ??
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
-        (, int256 price,,,) = priceFeed.latestRoundData();
+        (, int256 price,,,) = priceFeed.staleCheckLatestRoundData();
         uint256 tokenAmount = (usdAmountInWei * PRECISION) / (uint256(price) * ADDITIONAL_FEED_PRESCISION);
         return tokenAmount;
         //  $ (10e18 * 1e18) / ($2000e8 * 1e10)
@@ -286,9 +289,8 @@ contract TSCEngine is ReentrancyGuard {
 
     function getUsdValue(address token, uint256 amount) public view returns (uint256) {
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
-        (, int256 price,,,) = priceFeed.latestRoundData();
+        (, int256 price,,,) = priceFeed.staleCheckLatestRoundData();
         uint256 formattedPrice = (uint256(price) * ADDITIONAL_FEED_PRESCISION * amount) / 1e18;
-        console.log("formattedPrice", formattedPrice);
         // 2000,00000000 * 1e10 * 2000e18 / 1e18 = 400000
         return formattedPrice;
     }
@@ -324,6 +326,10 @@ contract TSCEngine is ReentrancyGuard {
 
     function getCollateralTokens() external view returns (address[] memory) {
         return s_collateralTokens;
+    }
+
+    function getCollateralTokenPriceFeed(address token) external view returns (address) {
+        return s_priceFeeds[token];
     }
 
     function getCollateralBalOfUser(address user, address token) external view returns (uint256) {

@@ -31,6 +31,10 @@ contract TSCEngineTest is Test {
     address public liquidator = makeAddr("liquidator");
     uint256 public collateralToCover = 20 ether;
 
+    event CollateralRedeemed(
+        address indexed redeemedFrom, address indexed redeemedTo, address indexed token, uint256 amount
+    );
+
     function setUp() public {
         deployer = new DeployTSC();
         (tsc, tscEngine, helperConfig) = deployer.run();
@@ -236,6 +240,14 @@ contract TSCEngineTest is Test {
         tscEngine.redeemCollateral(weth, AMOUNT_COLLATERAL);
         uint256 userBal = ERC20Mock(weth).balanceOf(USER);
         assertEq(userBal, AMOUNT_COLLATERAL);
+        vm.stopPrank();
+    }
+
+    function testEmitCollateralRedeemedEventWithProperArgs() public depositedCollateral {
+        vm.startPrank(USER);
+        vm.expectEmit(true, true, true, true, address(tscEngine));
+        emit CollateralRedeemed(USER, USER, weth, AMOUNT_COLLATERAL);
+        tscEngine.redeemCollateral(weth, AMOUNT_COLLATERAL);
         vm.stopPrank();
     }
 
